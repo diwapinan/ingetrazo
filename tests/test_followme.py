@@ -341,3 +341,84 @@ def test_edges_in_the_profile_plane_are_not_path_edges():
     assert t._chain == [] and t.preview_faces() == []
     t.on_click(_ctx(vp, 30, 0))                      # nothing to sweep yet
     assert len(m.faces) == 1 and vp.messages[-1].startswith("Follow Me: touch")
+
+
+# ---- Sloped / two-slope (crowned) paths -------------------------------------
+
+def _corbel_profile(m, x=0.0, z=0.0):
+    """A vertical corbel section (A = 0.15 m²) in the plane X = x, its top
+    inner corner at (x, 0, z) — not perpendicular to a sloped path."""
+    return m.add_face([V(x, 0, z), V(x, 0.25, z), V(x, 0.25, z - 0.4),
+                       V(x, 0, z - 0.8)])
+
+
+def test_two_slope_path_keeps_the_vertical_profile_and_vertical_ends():
+    """A corbel along a crowned back wall: the profile stays where it was
+    drawn (station 0 is the profile itself), the far cap is vertical too,
+    and the volume is area × plan length — the sections stay vertical."""
+    for rise in (0.093, 1.0, 5.0):                 # ~1 %, 20 %, 1:1
+        m = Mesh()
+        f = _corbel_profile(m)
+        path = [V(0, 0, 0), V(5, 0, rise), V(10, 0, 0)]
+        assert sweep_profile(m, f, path, closed=False)
+        assert is_closed(m)
+        assert abs(signed_volume(m) - 0.15 * 10) < 1e-4
+        xs = sorted({round(v.position.x(), 5) for v in m.vertices})
+        assert xs == [0.0, 5.0, 10.0]              # vertical caps and crown
+
+
+def test_profile_perpendicular_to_a_sloped_path_is_unchanged():
+    """A profile drawn square to the slope keeps the classic rule (caps
+    perpendicular to the end segments)."""
+    m = Mesh()
+    d = QVector3D(1, 0, 1).normalized()
+    u = QVector3D(0, 1, 0)
+    w = QVector3D.crossProduct(d, u)
+    f = m.add_face([QVector3D(0, 0, 0), u, u + w, w])
+    assert sweep_profile(m, f, [V(0, 0, 0), V(3, 0, 3)], closed=False)
+    assert is_closed(m)
+    assert abs(signed_volume(m) - 3 * math.sqrt(2)) < 1e-4
+
+
+def test_two_slope_tool_flow_on_a_crowned_wall():
+    """Path = the crowned top edge of a wall, profile on the wall's end
+    face: the sweep adds exactly what it adds on a flat wall."""
+    from core.orient import orient_outward
+    from tools.followme import FollowMeTool
+
+    def run(crown):
+        scene = Scene()
+        vp = _Vp(scene)
+        m = scene.mesh
+        t_ = 0.3
+        fr = [V(0, 0, 0), V(10, 0, 0), V(10, 0, 2.3), V(5, 0, crown),
+              V(0, 0, 2.3)]
+        bk = [V(p.x(), t_, p.z()) for p in fr]
+        m.add_face(fr)
+        m.add_face(bk[::-1])
+        for i in range(5):
+            j = (i + 1) % 5
+            m.add_face([fr[i], bk[i], bk[j], fr[j]])
+        orient_outward(m)
+        wall = signed_volume(m)
+        prof = m.add_face([V(0, t_, 2.3), V(0, t_ + 0.25, 2.3),
+                           V(0, t_ + 0.25, 1.9), V(0, t_, 1.5)])
+        top = [e for e in m.edges
+               if abs(e.a.y() - t_) < 1e-6 and abs(e.b.y() - t_) < 1e-6
+               and min(e.a.z(), e.b.z()) > 2.2]
+        scene.selection.update(top)
+        t = FollowMeTool()
+        t.on_activate(vp)
+        vp._pick = prof
+        ctx = ToolContext(viewport=vp, world=V(0, 0), screen=QPointF(0, 0),
+                          modifiers=Qt.NoModifier, snap=None)
+        t.on_hover(ctx)
+        t.on_click(ctx)
+        assert is_closed(m)
+        assert not any(abs(v.position.x()) > 1e-6
+                       and abs(v.position.x() - 5) > 1e-6
+                       and abs(v.position.x() - 10) > 1e-6
+                       for v in m.vertices)        # no tilted cap corners
+        return signed_volume(m) - wall
+
+    assert abs(run(2.393) - run(2.3)) < 1e-4

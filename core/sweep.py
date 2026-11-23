@@ -220,6 +220,22 @@ def _revolution_rings(face, path):
     return rings, dirs, n
 
 
+def _plan_turn(n, a, b):
+    """``n`` rotated about world Z by the plan angle from direction ``a`` to
+    direction ``b``, or ``None`` when either runs vertically (no plan
+    angle) or the turned normal would lie along ``b``'s plane."""
+    import math
+    ax, ay, bx, by = a.x(), a.y(), b.x(), b.y()
+    if math.hypot(ax, ay) < 1e-9 or math.hypot(bx, by) < 1e-9:
+        return None
+    ang = math.atan2(ax * by - ay * bx, ax * bx + ay * by)
+    c, s = math.cos(ang), math.sin(ang)
+    out = QVector3D(n.x() * c - n.y() * s, n.x() * s + n.y() * c, n.z())
+    if abs(QVector3D.dotProduct(out, b)) < 1e-6:
+        return None
+    return out
+
+
 def sweep_rings(face, path, closed):
     """The profile's rings (outer loop + holes) at every path station.
 
@@ -241,13 +257,30 @@ def sweep_rings(face, path, closed):
             return None
         dirs.append(d.normalized())
 
+    # An open path whose first segment is NOT perpendicular to the profile —
+    # a vertical profile on a sloped path, the corbel along a two-slope
+    # (crowned) back wall: the profile itself is station 0, exactly where it
+    # was drawn, and the far cap is the profile turned in plan only, so a
+    # vertical profile ends vertical. Sliding the profile onto the plane
+    # perpendicular to the slope (the old rule) tilted the start cap away
+    # from the profile face, which stayed behind with a wedge between them.
+    start_n = end_n = None
+    if not closed:
+        fn = face.normal()
+        dn = QVector3D.dotProduct(fn, dirs[0])
+        if 1e-6 < abs(dn) < 1.0 - 1e-6:
+            if dn < 0.0:
+                fn = -fn
+            start_n = fn
+            end_n = _plan_turn(fn, dirs[0], dirs[-1])
+
     def joint_normal(i):
         if closed:
             a, b = dirs[(i - 1) % spans], dirs[i % spans]
         elif i == 0:
-            return dirs[0]
+            return start_n if start_n is not None else dirs[0]
         elif i >= spans:
-            return dirs[-1]
+            return end_n if end_n is not None else dirs[-1]
         else:
             a, b = dirs[i - 1], dirs[i]
         s = a + b
